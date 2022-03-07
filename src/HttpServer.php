@@ -19,6 +19,8 @@ final class HttpServer
 
     private Options $options;
 
+    private RequestHandler $requestHandler;
+
     private ErrorHandler $errorHandler;
 
     private ClientFactory $clientFactory;
@@ -28,15 +30,19 @@ final class HttpServer
     /** @var SocketServer[] */
     private array $sockets;
 
+    /** @var \Closure[] */
+    private array $onStart = [];
+
+    /** @var \Closure[] */
+    private array $onStop = [];
+
     /**
      * @param SocketServer[] $sockets
-     * @param RequestHandler $requestHandler
      * @param PsrLogger $logger
      * @param Options|null $options Null creates an Options object with all default options.
      */
     public function __construct(
         array $sockets,
-        private RequestHandler $requestHandler,
         private PsrLogger $logger,
         ?Options $options = null,
         ?ErrorHandler $errorHandler = null,
@@ -55,21 +61,14 @@ final class HttpServer
 
         $this->options = $options ?? new Options;
 
-        if ($this->options->isCompressionEnabled()) {
-            if (!\extension_loaded('zlib')) {
-                $this->logger->warning(
-                    "The zlib extension is not loaded which prevents using compression. " .
-                    "Either activate the zlib extension or disable compression in the server's options."
-                );
-            } else {
-                $this->requestHandler = Middleware\stack($this->requestHandler, new CompressionMiddleware);
-            }
-        }
-
         $this->sockets = $sockets;
         $this->clientFactory = $clientFactory ?? new SocketClientFactory;
         $this->errorHandler = $errorHandler ?? new DefaultErrorHandler;
-        $this->driverFactory = $driverFactory ?? new DefaultHttpDriverFactory($this->requestHandler, $this->errorHandler, $this->logger, $this->options);
+        if ($driverFactory) {
+            $this->driverFactory = $driverFactory;
+        }
+
+        $this->onStart((new PerformanceRecommender())->onStart(...));
     }
 
     /**
@@ -131,6 +130,18 @@ final class HttpServer
     }
 
     /**
+     * Retrieve the request handler.
+     */
+    public function getRequestHandler(): RequestHandler
+    {
+        if (!isset($this->requestHandler)) {
+            throw new \Error("Cannot access the request handler while the server is inactive");
+        }
+
+        return $this->requestHandler;
+    }
+
+    /**
      * Retrieve the error handler.
      */
     public function getErrorHandler(): ErrorHandler
@@ -149,15 +160,34 @@ final class HttpServer
     /**
      * Start the server.
      */
-    public function start(): void
+    public function start(RequestHandler $requestHandler): void
     {
         if ($this->status !== HttpServerStatus::Stopped) {
             throw new \Error("Cannot start server: " . $this->status->getLabel());
         }
 
+        $this->requestHandler = $requestHandler;
+
+        if ($this->options->isCompressionEnabled()) {
+            if (!\extension_loaded('zlib')) {
+                $this->logger->warning(
+                    "The zlib extension is not loaded which prevents using compression. " .
+                    "Either activate the zlib extension or disable compression in the server's options."
+                );
+            } else {
+                $this->requestHandler = Middleware\stack($this->requestHandler, new CompressionMiddleware);
+            }
+        }
+
         $this->status = HttpServerStatus::Started;
 
-        (new PerformanceRecommender())->onStart($this);
+        $this->driverFactory ??= new DefaultHttpDriverFactory;
+        $this->driverFactory->setup($this);
+
+        foreach ($this->onStart as $cb) {
+            $cb($this);
+        }
+
         $this->logger->info("Started server");
 
         foreach ($this->sockets as $socket) {
@@ -202,6 +232,20 @@ final class HttpServer
     }
 
     /**
+     * Listen to the server starting.
+     */
+    public function onStart(\Closure $onStart) {
+        $this->onStart[] = $onStart;
+    }
+
+    /**
+     * Listen to the server stopping.
+     */
+    public function onStop(\Closure $onStop) {
+        $this->onStop[] = $onStop;
+    }
+
+    /**
      * Stop the server.
      */
     public function stop(): void
@@ -220,6 +264,12 @@ final class HttpServer
         foreach ($this->sockets as $socket) {
             $socket->close();
         }
+
+        foreach ($this->onStop as $cb) {
+            $cb($this);
+        }
+
+        unset($this->requestHandler);
 
         $this->logger->debug("Stopped server");
         $this->status = HttpServerStatus::Stopped;

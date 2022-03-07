@@ -5,18 +5,23 @@ namespace Amp\Http\Server\Driver;
 use Amp\ByteStream\ReadableStream;
 use Amp\ByteStream\WritableStream;
 use Amp\Http\Server\ErrorHandler;
+use Amp\Http\Server\HttpServer;
 use Amp\Http\Server\Options;
 use Amp\Http\Server\RequestHandler;
 use Psr\Log\LoggerInterface;
 
 final class DefaultHttpDriverFactory implements HttpDriverFactory
 {
-    public function __construct(
-        private RequestHandler $requestHandler,
-        private ErrorHandler $errorHandler,
-        private LoggerInterface $logger,
-        private Options $options
-    ) {
+    private RequestHandler $requestHandler;
+    private ErrorHandler $errorHandler;
+    private LoggerInterface $logger;
+    private Options $options;
+
+    public function setup(HttpServer $server): void {
+        $this->requestHandler = $server->getRequestHandler();
+        $this->errorHandler = $server->getErrorHandler();
+        $this->logger = $server->getLogger();
+        $this->options = $server->getOptions();
     }
 
     public function getApplicationLayerProtocols(): array
