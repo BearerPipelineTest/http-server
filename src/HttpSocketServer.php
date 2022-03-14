@@ -4,11 +4,8 @@ namespace Amp\Http\Server;
 
 use Amp\CompositeException;
 use Amp\Future;
-use Amp\Http\Server\Driver\ClientFactory;
 use Amp\Http\Server\Driver\ClientHandler;
-use Amp\Http\Server\Driver\DefaultHttpDriverFactory;
-use Amp\Http\Server\Driver\HttpDriverFactory;
-use Amp\Http\Server\Driver\SocketClientFactory;
+use Amp\Http\Server\Driver\ConnectionLimitingClientHandler;
 use Amp\Http\Server\Driver\SocketClientHandler;
 use Amp\Http\Server\Internal\PerformanceRecommender;
 use Amp\Http\Server\Middleware\CompressionMiddleware;
@@ -62,7 +59,7 @@ final class HttpSocketServer implements HttpServer
         $this->options = $options ?? new Options;
         $this->sockets = $sockets;
         $this->errorHandler = $errorHandler ?? new DefaultErrorHandler;
-        $this->clientHandler = $clientHandler ?? new SocketClientHandler;
+        $this->clientHandler = $clientHandler ?? new ConnectionLimitingClientHandler(new SocketClientHandler);
 
         $this->onStart((new PerformanceRecommender())->onStart(...));
     }
