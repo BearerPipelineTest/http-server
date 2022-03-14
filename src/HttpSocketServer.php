@@ -5,9 +5,11 @@ namespace Amp\Http\Server;
 use Amp\CompositeException;
 use Amp\Future;
 use Amp\Http\Server\Driver\ClientFactory;
+use Amp\Http\Server\Driver\ClientHandler;
 use Amp\Http\Server\Driver\DefaultHttpDriverFactory;
 use Amp\Http\Server\Driver\HttpDriverFactory;
 use Amp\Http\Server\Driver\SocketClientFactory;
+use Amp\Http\Server\Driver\SocketClientHandler;
 use Amp\Http\Server\Internal\PerformanceRecommender;
 use Amp\Http\Server\Middleware\CompressionMiddleware;
 use Amp\Socket;
@@ -24,9 +26,7 @@ final class HttpSocketServer implements HttpServer
 
     private readonly ErrorHandler $errorHandler;
 
-    private readonly ClientFactory $clientFactory;
-
-    private readonly HttpDriverFactory $driverFactory;
+    private readonly ClientHandler $clientHandler;
 
     /** @var SocketServer[] */
     private readonly array $sockets;
@@ -47,8 +47,7 @@ final class HttpSocketServer implements HttpServer
         private readonly PsrLogger $logger,
         ?Options $options = null,
         ?ErrorHandler $errorHandler = null,
-        ?HttpDriverFactory $driverFactory = null,
-        ?ClientFactory $clientFactory = null,
+        ?ClientHandler $clientHandler = null,
     ) {
         if (!$sockets) {
             throw new \ValueError('Argument #1 ($sockets) can\'t be an empty array');
@@ -62,10 +61,8 @@ final class HttpSocketServer implements HttpServer
 
         $this->options = $options ?? new Options;
         $this->sockets = $sockets;
-        $this->clientFactory = $clientFactory ?? new SocketClientFactory;
         $this->errorHandler = $errorHandler ?? new DefaultErrorHandler;
-        $this->driverFactory = $driverFactory ??
-            new DefaultHttpDriverFactory($this->errorHandler, $this->logger, $this->options);
+        $this->clientHandler = $clientHandler ?? new SocketClientHandler;
 
         $this->onStart((new PerformanceRecommender())->onStart(...));
     }
@@ -154,7 +151,7 @@ final class HttpSocketServer implements HttpServer
         $this->status = HttpServerStatus::Started;
 
         foreach ($this->sockets as $socket) {
-            $socket = $this->driverFactory->setUpSocketServer($socket);
+            $socket = $this->clientHandler->setUpSocketServer($socket);
 
             $scheme = $socket->getBindContext()?->getTlsContext() !== null ? 'https' : 'http';
             $serverName = $socket->getAddress()->toString();
@@ -169,29 +166,23 @@ final class HttpSocketServer implements HttpServer
         }
     }
 
-    private function accept(RequestHandler $requestHandler, Socket\EncryptableSocket $clientSocket): void
+    private function accept(RequestHandler $requestHandler, Socket\EncryptableSocket $client): void
     {
         try {
-            $client = $this->clientFactory->createClient($clientSocket);
-            if ($client === null) {
-                return;
-            }
-
-            $httpDriver = $this->driverFactory->createHttpDriver($client);
-
-            $httpDriver->handleClient(
+            $this->clientHandler->handleClient(
                 $requestHandler,
+                $this->errorHandler,
+                $this->options,
+                $this->logger,
                 $client,
-                $clientSocket,
-                $clientSocket,
             );
         } catch (\Throwable $exception) {
             $this->logger->debug("Exception while handling client {address}", [
-                'address' => $clientSocket->getRemoteAddress(),
+                'address' => $client->getRemoteAddress(),
                 'exception' => $exception,
             ]);
 
-            $clientSocket->close();
+            $client->close();
         }
     }
 
